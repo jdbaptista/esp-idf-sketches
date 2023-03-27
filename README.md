@@ -4,7 +4,9 @@ A repository containing small projects for the ESP32 built using the Espressif s
 The documentation for the Espressif ESP32 sdk can be found at:
 https://docs.espressif.com/projects/esp-idf/en/latest/esp32/
 
-Typical workflow:
+To upload and run the sketches that are here, jump to step 5 in the typical workflow.
+
+Typical Workflow:
 1. Open esp-idf powershell or command prompt
 2. Navigate to working directory
 3. Execute "idf.py create-project [project_name]"
