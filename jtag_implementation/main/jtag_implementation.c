@@ -50,24 +50,24 @@ uint8_t IR_SHIFT(uint8_t input_data) {
     // TMS set through falling and rising edge
     gpio_set_level(TMS, HIGH);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Select DR)
 
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Select IR)
 
     gpio_set_level(TMS, LOW);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (Capture IR)
 
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (Shift IR)
 
     // shift data into IR
-    uint16_t bit;
+    uint8_t bit;
     for (int i = 0; i < 7; i++) {
         bit = input_data >> i;
         bit &= 0x01; // send the selected bit
-        gpio_set_level(TDI, bit);
+        gpio_set_level(TDI, (uint32_t) bit);
         gpio_set_level(TCK, LOW);
         gpio_set_level(TCK, HIGH);
         uint16_t output = gpio_get_level(TDO);
@@ -80,22 +80,22 @@ uint8_t IR_SHIFT(uint8_t input_data) {
     gpio_set_level(TMS, HIGH);
     gpio_set_level(TDI, bit);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Exit IR)
     ret |= gpio_get_level(TDO);
 
+    gpio_set_level(TDI, prevTDI);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Update IR)
 
     gpio_set_level(TMS, LOW);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (IDLE)
 
     for (int i = 0; i < 4; i++) {
         gpio_set_level(TCK, LOW);
         gpio_set_level(TCK, HIGH);
     }
 
-    gpio_set_level(TDI, prevTDI);
     return ret;
 }
 
@@ -118,44 +118,48 @@ uint16_t DR_SHIFT(uint16_t input_data) {
     // TMS set through falling and rising edge
     gpio_set_level(TMS, HIGH);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Select DR)
 
     gpio_set_level(TMS, LOW);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (Capture DR)
 
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (Shift DR)
 
     // shift data into DR
     uint16_t bit;
     for (int i = 15; i > 0; i--) {
         bit = input_data >> i;
         bit &= 0x0001; // send the selected bit
-        gpio_set_level(TDI, bit);
+        gpio_set_level(TDI, (uint32_t) bit);
         gpio_set_level(TCK, LOW);
         gpio_set_level(TCK, HIGH);
         uint16_t output = gpio_get_level(TDO);
         ret |= output << i;
     }
-
     // Send LSB and return to Run/Idle
     bit = input_data;
     bit &= 0x0001;
     gpio_set_level(TMS, HIGH);
     gpio_set_level(TDI, bit);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Exit DR)
     ret |= gpio_get_level(TDO);
 
+    gpio_set_level(TDI, prevTDI);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 1
+    gpio_set_level(TCK, HIGH); // 1 (Update DR)
 
     gpio_set_level(TMS, LOW);
     gpio_set_level(TCK, LOW);
-    gpio_set_level(TCK, HIGH); // 0
+    gpio_set_level(TCK, HIGH); // 0 (IDLE)
 
-    gpio_set_level(TDI, prevTDI);
+    for (int i = 0; i < 4; i++) {
+        gpio_set_level(TCK, LOW);
+        gpio_set_level(TCK, HIGH);
+    }
+
     return ret;
 }
 
@@ -189,7 +193,7 @@ void GetDevice() {
     printf("Syncing CPU...\n");
     while (true) {
         uint16_t TDOword = DR_SHIFT((uint16_t) 0x0000);
-        if ((TDOword & 0x0080) != 0) {
+        if ((TDOword & 0x0200) != 0) {
             printf("Sync Successful!\n");
             return;
         }
@@ -205,8 +209,8 @@ void GetDevice() {
 */
 void ReleaseDevice() {
     IR_SHIFT(IR_CNTRL_SIG_16BIT);
-    DR_SHIFT((uint16_t) 0x2C01);
-    DR_SHIFT((uint16_t) 0x2401);
+    DR_SHIFT((uint16_t) 0x2C01); // apply reset
+    DR_SHIFT((uint16_t) 0x2401); // remove reset
     IR_SHIFT(IR_CNTRL_SIG_RELEASE);
 }
 
@@ -218,7 +222,7 @@ void ReleaseDevice() {
 void SetInstrFetch() {
     IR_SHIFT(IR_CNTRL_SIG_CAPTURE);
     uint16_t data = DR_SHIFT((uint16_t) 0x0000);
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 8; i++) {
         printf("InstrFetch: 0x%X\n", data);
         if ((data & 0x0080) != 0) return;
         ClrTCLK();
@@ -268,9 +272,11 @@ void ExecutePOR() {
     control signal register, which is set to 1 here.
 */
 void HaltCPU() {
+    // Execute JMP $ instr to maintain state
     IR_SHIFT(IR_DATA_16BIT);
     DR_SHIFT((uint16_t) 0x3FFF);
     ClrTCLK();
+    // set halt bit in cntrl signal
     IR_SHIFT(IR_CNTRL_SIG_16BIT);
     DR_SHIFT((uint16_t) 0x2409);
     SetTCLK();
@@ -292,56 +298,116 @@ void ReleaseCPU() {
     Reads one word (2 bytes) of memory at addr.
 */
 uint16_t ReadMem(uint16_t addr) {
-    SetInstrFetch();
-    HaltCPU();
     ClrTCLK();
     IR_SHIFT(IR_CNTRL_SIG_16BIT);
-    // read one word from mem
-    uint16_t data = DR_SHIFT((uint16_t) 0x2409);
+    DR_SHIFT((uint16_t) 0x2409); // one word, not byte
     IR_SHIFT(IR_ADDR_16BIT);
     DR_SHIFT(addr);
     IR_SHIFT(IR_DATA_TO_ADDR);
     SetTCLK();
     ClrTCLK();
-    DR_SHIFT((uint16_t) 0x0000);
-    ReleaseCPU();
+    uint16_t data = DR_SHIFT((uint16_t) 0x0000);
     return data;
 }
 
 void WriteMem(uint16_t addr, uint16_t data) {
-    SetInstrFetch();
-    HaltCPU();
     ClrTCLK();
     IR_SHIFT(IR_CNTRL_SIG_16BIT);
     DR_SHIFT((uint16_t) 0x2408);
+    // printf("\tcontrol check: \n");
+    // IR_SHIFT(IR_CNTRL_SIG_CAPTURE);
+    // printf("\tcontrol signal is: 0x%.4x\n", DR_SHIFT(0x1111));
     IR_SHIFT(IR_ADDR_16BIT);
     DR_SHIFT(addr);
+    // printf("\taddress check: \n");
+    // IR_SHIFT(IR_ADDR_CAPTURE);
+    // printf("\tAddress is: 0x%.4x\n", DR_SHIFT(0x4444));
     IR_SHIFT(IR_DATA_TO_ADDR);
     DR_SHIFT(data);
     SetTCLK();
-    ReleaseCPU();
 }
 
 void RWTest() {
     // write data
-    uint16_t addr1 = 0x033F; // part of RAM (I think)
-    uint16_t addr2 = 0x02AF;
-    printf("first write...\n");
-    WriteMem(addr1, 0xDEAD);
-    printf("second write...\n");
-    WriteMem(addr2, 0xBEEF);
-
-    // read data!!!
-    printf("first read...\n");
-    printf("0x%X\n", ReadMem(addr1));
-    printf("second read...\n");
-    printf("0x%X\n", ReadMem(addr2));
+    uint16_t addr1 = 0xFFF0; // part of RAM (I think)
+    uint16_t addr2 = 0xFF88;
+    uint16_t addr3 = 0x0332;
+    uint16_t addr4 = 0x0200;
+    // WriteMem(addr1, 0xDEAD);
+    // WriteMem(addr2, 0xBEEF);
+    WriteMem(addr3, 0xB0BA);
+    WriteMem(addr4, 0xCAFE);
+    ReadMem(addr1);
+    ReadMem(addr2);
+    ReadMem(addr3);
+    ReadMem(addr4);
 }
 
-void registerTest() {
-    for (int i = 0; i < 100; i++) {
-    		    
+void ReadCode(uint16_t start_addr, uint16_t stop_addr) {
+    for (uint16_t curr_addr = start_addr; curr_addr < stop_addr; curr_addr+=4) {
+        if (curr_addr % 64 == 0) {
+            printf("\nAddress 0x%.4x: ", curr_addr);
+        }
+        printf("0x%.4x ", ReadMem(curr_addr));
     }
+    printf("\n");
+}
+
+void RegisterTest() {
+    uint8_t output;
+    for (uint8_t i = 0; i < 10; i++) {
+        output = IR_SHIFT(i);
+        if (output != (uint8_t) 0x89) {
+            printf("IR_SHIFT failed to return JTAG ID!\n");
+            return;
+        }
+    }
+    printf("IR_SHIFT test successful...\n");
+    printf("Setting IR to IR_ADDR_16BIT, ie. 0x83\n");
+    IR_SHIFT((uint8_t) 0x83);
+    uint16_t output2;
+    DR_SHIFT((uint16_t) 0);
+    output2 = DR_SHIFT((uint16_t) 0x4411);
+    if (output2 != (uint16_t) 0) {
+        printf("DR_SHIFT failed to return previous input data!\n");
+        printf("Expected: 0x%x\n", (uint16_t) 0x0000);
+        printf("Received: 0x%x\n", (uint16_t) output2);
+        return;
+    }
+    output2 = DR_SHIFT((uint16_t) 0xDEAD);
+    if (output2 != (uint16_t) 0x4411) {
+        printf("DR_SHIFT failed to return previous input data! %x\n", 0x4411);
+        return;
+    }
+    output2 = DR_SHIFT((uint16_t) 0xDEAD);
+    if (output2 != (uint16_t) 0xDEAD) {
+        printf("DR_SHIFT failed to return previous input data! %x\n", 0xDEAD);
+        return;
+    }
+
+    printf("Setting IR to IR_BYPASS, ie. 0xFF\n");
+    IR_SHIFT((uint8_t) 0xFF);
+    DR_SHIFT((uint16_t) 0);
+    output2 = DR_SHIFT((uint16_t) 0x4411);
+    if (output2 != (uint16_t) 0x2208) {
+        printf("DR_SHIFT failed to return previous input data! %x\n", 0x2208);
+        return;
+    }
+    DR_SHIFT((uint16_t) 0xFFFF);
+    output2 = DR_SHIFT((uint16_t) 0x8EAD);
+    if (output2 != (uint16_t) 0x4756) {
+        printf("DR_SHIFT failed to return previous input data! %x\n", 0x4756);
+        return;
+    }
+    DR_SHIFT((uint16_t) 0);
+    output2 = DR_SHIFT((uint16_t) 0xBEEF);
+    if (output2 != (uint16_t) 0x5F77) {
+        printf("DR_SHIFT failed to return previous input data! %x\n", 0x5F77);
+        return;
+    }
+
+    printf("DR_SHIFT test successful...\n");
+    return;
 }
 
 /*
@@ -400,12 +466,23 @@ void app_main(void)
     gpio_set_level(TMS, HIGH);
     gpio_set_level(TMS, LOW);
 
+    // RegisterTest();
     GetDevice();
 
-    RWTest();
+    SetInstrFetch();
+    printf("Halting CPU...\n");
+    HaltCPU();
 
+    printf("\n");
+    for (uint16_t curr_start = 0xC000; curr_start <= 0xE000; curr_start += (uint16_t) 0x1000) {
+        ReadCode(curr_start, curr_start + 0x1000);
+        printf("\n");
+    }
+
+    printf("\n");
+    ReleaseCPU();
     // // relinquish JTAG access
-    ReleaseDevice();
+    // ReleaseDevice();
     gpio_set_level(TEN, LOW);
     vTaskDelay(1 / portTICK_PERIOD_MS);
 }
